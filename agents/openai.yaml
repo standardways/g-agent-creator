@@ -1,0 +1,6 @@
+interface:
+  display_name: "G-Agent Creator"
+  short_description: "Generate standalone Flutter+Node agent apps"
+  icon_small: "./assets/g-agent-creator-small.png"
+  icon_large: "./assets/g-agent-creator.png"
+  default_prompt: "Use $g-agent-creator to create a standalone Flutter shell with a Node agent core on Firebase and Cloud Run."

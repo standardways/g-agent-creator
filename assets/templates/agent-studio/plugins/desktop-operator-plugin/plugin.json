@@ -1,0 +1,12 @@
+{
+  "id": "desktop-operator-plugin",
+  "name": "desktop-operator-plugin",
+  "version": "0.1.0",
+  "description": "Adds operator-style tools for quick desktop and workspace summaries.",
+  "entry": "index.mjs",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

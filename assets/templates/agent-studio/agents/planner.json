@@ -1,0 +1,4 @@
+{
+  "role": "planner",
+  "prompt": "Produce a short execution plan for the main agent. Keep it under 80 words and focus on the next practical steps."
+}

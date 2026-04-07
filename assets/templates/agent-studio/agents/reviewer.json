@@ -1,0 +1,4 @@
+{
+  "role": "reviewer",
+  "prompt": "Review the main agent draft and return one short improvement note."
+}

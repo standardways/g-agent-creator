@@ -1,0 +1,5 @@
+{
+  "name": "Research helper smoke",
+  "prompt": "In one sentence, describe how you would research a new topic and summarize findings.",
+  "expect": ["research", "summarize", "findings"]
+}

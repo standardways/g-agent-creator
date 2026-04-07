@@ -1,0 +1,12 @@
+{
+  "id": "example-runtime-plugin",
+  "name": "example-runtime-plugin",
+  "version": "0.1.0",
+  "description": "Sample local runtime plugin with one hook and one workspace tool.",
+  "entry": "index.mjs",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

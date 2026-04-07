@@ -1,0 +1,7 @@
+version: v1
+network:
+  default: deny
+  allow:
+    - host: "api.openai.com"
+    - host: "*.googleapis.com"
+    - host: "*.run.app"

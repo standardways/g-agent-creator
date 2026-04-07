@@ -1,0 +1,5 @@
+{
+  "name": "Coding helper smoke",
+  "prompt": "Explain in one sentence how you would inspect a codebase before editing it.",
+  "expect": ["inspect", "codebase", "editing"]
+}

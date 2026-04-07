@@ -1,0 +1,5 @@
+{
+  "name": "Writing helper smoke",
+  "prompt": "In one sentence, explain how you would draft and refine a short professional memo.",
+  "expect": ["draft", "refine", "memo"]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "browser-research-plugin",
+  "name": "browser-research-plugin",
+  "version": "0.1.0",
+  "description": "Adds lightweight browsing and extraction tools for research tasks.",
+  "entry": "index.mjs",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

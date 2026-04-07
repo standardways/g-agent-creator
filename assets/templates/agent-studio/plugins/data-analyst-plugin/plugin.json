@@ -1,0 +1,12 @@
+{
+  "id": "data-analyst-plugin",
+  "name": "data-analyst-plugin",
+  "version": "0.1.0",
+  "description": "Adds lightweight structured data inspection tools.",
+  "entry": "index.mjs",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

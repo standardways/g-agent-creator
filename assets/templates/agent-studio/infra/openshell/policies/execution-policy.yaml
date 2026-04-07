@@ -1,0 +1,8 @@
+version: v1
+execution:
+  default: deny
+  allowCommands:
+    - "git status"
+    - "git diff"
+    - "npm test"
+    - "flutter analyze"

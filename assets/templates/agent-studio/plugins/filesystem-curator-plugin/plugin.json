@@ -1,0 +1,12 @@
+{
+  "id": "filesystem-curator-plugin",
+  "name": "filesystem-curator-plugin",
+  "version": "0.1.0",
+  "description": "Adds quick workspace curation helpers.",
+  "entry": "index.mjs",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

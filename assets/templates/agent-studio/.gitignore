@@ -1,0 +1,17 @@
+.DS_Store
+.idea/
+.vscode/
+node_modules/
+dist/
+.env
+.env.local
+.firebase/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+pubspec.lock
+coverage/
+apps/core/.local-data/
+apps/shell/macos/Flutter/ephemeral/

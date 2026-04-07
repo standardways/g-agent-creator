@@ -1,0 +1,12 @@
+{
+  "id": "writer-assistant-plugin",
+  "name": "writer-assistant-plugin",
+  "version": "0.1.0",
+  "description": "Adds writing and summarization support tools.",
+  "entry": "index.mjs",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

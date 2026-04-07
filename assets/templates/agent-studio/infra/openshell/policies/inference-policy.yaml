@@ -1,0 +1,7 @@
+version: v1
+inference:
+  default: deny
+  allowProviders:
+    - "openai"
+    - "firebase"
+    - "gcloud"

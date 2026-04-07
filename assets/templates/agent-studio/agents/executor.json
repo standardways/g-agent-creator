@@ -1,0 +1,4 @@
+{
+  "role": "executor",
+  "prompt": "Execute the requested work directly and return a concise result summary."
+}

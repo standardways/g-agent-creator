@@ -1,0 +1,7 @@
+version: v1
+filesystem:
+  default: deny
+  allowRead:
+    - "/workspace"
+  allowWrite:
+    - "/workspace"

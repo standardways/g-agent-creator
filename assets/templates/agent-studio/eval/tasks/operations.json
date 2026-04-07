@@ -1,0 +1,5 @@
+{
+  "name": "Operations helper smoke",
+  "prompt": "In one sentence, explain how you would execute a repeatable computer task and verify the outcome.",
+  "expect": ["execute", "verify", "task"]
+}
