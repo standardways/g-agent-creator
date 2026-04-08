@@ -16,6 +16,7 @@ export type AssembleInput = {
   plannerNote?: string;
   rolePrompt?: string | null;
   compactionSummary?: string;
+  promptSupplements?: string[];
   recentMessages: Array<{ role: string; content: string }>;
 };
 
@@ -70,6 +71,7 @@ const legacyEngine: ContextEngine = {
     const sections = [
       `You are a general digital worker runtime. You can help with coding, research, writing, analysis, operations, and other computer-based knowledge work. Stay concise, safe, and outcome-oriented. Current workspace: ${input.workspacePath ?? "not set"}.`,
       promptInjectionGuardrailText(),
+      ...(input.promptSupplements ?? []),
       input.rolePrompt ? `Active role:\n${input.rolePrompt}` : "",
       input.plannerNote ? `Planner note: ${input.plannerNote}` : "",
       input.compactionSummary ? `Earlier session summary:\n${input.compactionSummary}` : "",

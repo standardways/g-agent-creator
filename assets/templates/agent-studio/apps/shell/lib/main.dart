@@ -800,6 +800,56 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
+  Future<void> _searchKnowledgeWiki() async {
+    try {
+      final data = await _postJson('/api/knowledge/wiki/search', {
+        'query': _searchQuery.text.trim(),
+      });
+      setState(() {
+        _knowledgeResults = data['results'];
+      });
+    } catch (error) {
+      _pushEvent('wiki search failed: $error');
+    }
+  }
+
+  Future<void> _getKnowledgeWikiDocument() async {
+    try {
+      final data = await _postJson('/api/knowledge/wiki/get', {
+        'lookup': _knowledgeSelector.text.trim(),
+      });
+      setState(() {
+        _knowledgeResults = data;
+      });
+    } catch (error) {
+      _pushEvent('wiki get failed: $error');
+    }
+  }
+
+  Future<void> _compileKnowledgeWiki() async {
+    try {
+      final data = await _postJson('/api/knowledge/wiki/compile', {});
+      setState(() {
+        _knowledgeResults = data;
+      });
+      await _refreshAuxiliary();
+    } catch (error) {
+      _pushEvent('wiki compile failed: $error');
+    }
+  }
+
+  Future<void> _bridgeKnowledgeWiki() async {
+    try {
+      final data = await _postJson('/api/knowledge/wiki/bridge/import', {});
+      setState(() {
+        _knowledgeResults = data;
+      });
+      await _refreshAuxiliary();
+    } catch (error) {
+      _pushEvent('wiki bridge import failed: $error');
+    }
+  }
+
   Future<void> _initKnowledgeWiki() async {
     try {
       await _postJson('/api/knowledge/wiki/init', {});
@@ -1793,6 +1843,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               if ((map['summary'] ?? '').toString().isNotEmpty) map['summary'].toString(),
               if ((map['snippet'] ?? '').toString().isNotEmpty) map['snippet'].toString(),
               if ((map['path'] ?? '').toString().isNotEmpty) map['path'].toString(),
+              if ((map['provenanceLabel'] ?? '').toString().isNotEmpty) 'provenance: ${map['provenanceLabel']}',
+              if ((map['sourceType'] ?? '').toString().isNotEmpty) 'source: ${map['sourceType']}',
+              if ((map['updatedAt'] ?? '').toString().isNotEmpty) 'updated: ${map['updatedAt']}',
             ].where((value) => value.trim().isNotEmpty).join('\n');
             return ListTile(
               dense: true,
@@ -1811,7 +1864,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (data is Map) {
       final map = Map<String, dynamic>.from(data);
       if ((map['content'] as String? ?? '').isNotEmpty) {
-        return SelectableText(map['content'] as String);
+        final metadata = [
+          if ((map['path'] ?? '').toString().isNotEmpty) 'path: ${map['path']}',
+          if ((map['provenanceLabel'] ?? '').toString().isNotEmpty) 'provenance: ${map['provenanceLabel']}',
+          if ((map['sourceType'] ?? '').toString().isNotEmpty) 'source: ${map['sourceType']}',
+          if ((map['updatedAt'] ?? '').toString().isNotEmpty) 'updated: ${map['updatedAt']}',
+        ].join('\n');
+        return SelectableText(
+          '${metadata.isNotEmpty ? '$metadata\n\n' : ''}${map['content'] as String}',
+        );
       }
       return SelectableText(const JsonEncoder.withIndent('  ').convert(map));
     }
@@ -1901,7 +1962,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       ));
     }
 
-    if ((_knowledgeStatus['enabled'] ?? false) == false) {
+    if (((_knowledgeStatus['qmd'] as Map?)?['enabled'] ?? false) == false) {
       buttons.add(OutlinedButton(onPressed: _openConfigFormEditor, child: const Text('Enable knowledge')));
     }
     if ((_queueSummary['queued'] ?? 0) is num && ((_queueSummary['queued'] ?? 0) as num) > 0) {
@@ -2287,12 +2348,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          SelectableText(const JsonEncoder.withIndent('  ').convert(_knowledgeStatus)),
+                          Text('QMD available: ${((_knowledgeStatus['qmd'] as Map?)?['available'] ?? false)}'),
+                          const SizedBox(height: 4),
+                          Text('Wiki vault ready: ${((_knowledgeStatus['wiki'] as Map?)?['vaultExists'] ?? false)}'),
+                          const SizedBox(height: 4),
+                          Text('Vault mode: ${((_knowledgeStatus['wiki'] as Map?)?['vaultMode'] ?? 'isolated')}'),
+                          const SizedBox(height: 4),
+                          Text('Pages: ${((_knowledgeStatus['wiki'] as Map?)?['pageCounts'] ?? const {}).toString()}'),
+                          const SizedBox(height: 4),
+                          if (((_knowledgeStatus['doctor'] as Map?)?['lintSummary'] as Map?) != null)
+                            Text('Lint issues: ${((_knowledgeStatus['doctor'] as Map?)?['lintSummary'] as Map?)?['issueCount'] ?? 0}'),
                           const SizedBox(height: 8),
                           Row(
                             children: [
                               Expanded(
                                 child: FilledButton(onPressed: _queryKnowledge, child: const Text('Query QMD')),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: FilledButton(onPressed: _searchKnowledgeWiki, child: const Text('Search wiki')),
                               ),
                             ],
                           ),
@@ -2319,7 +2393,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               ),
                               const SizedBox(width: 8),
                               Expanded(
+                                child: OutlinedButton(onPressed: _compileKnowledgeWiki, child: const Text('Compile')),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
                                 child: OutlinedButton(onPressed: _ingestKnowledgeSource, child: const Text('Ingest source')),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: OutlinedButton(onPressed: _bridgeKnowledgeWiki, child: const Text('Bridge import')),
                               ),
                             ],
                           ),
@@ -2331,7 +2417,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               ),
                               const SizedBox(width: 8),
                               Expanded(
+                                child: OutlinedButton(onPressed: _getKnowledgeWikiDocument, child: const Text('Get wiki')),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
                                 child: OutlinedButton(onPressed: _fileKnowledgeAnswer, child: const Text('File answer')),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: OutlinedButton(onPressed: _refreshAll, child: const Text('Refresh wiki')),
                               ),
                             ],
                           ),
@@ -2534,7 +2632,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                               _statusChip('Tasks', _taskRegistry.length.toString()),
                               _statusChip('Queue lanes', _fmtCount(_queueSummary, 'lanes')),
                               _statusChip('Plugins', _codexPlugins.length.toString()),
-                              _statusChip('Knowledge', (_knowledgeStatus['available'] ?? false).toString()),
+                              _statusChip('Knowledge', (((_knowledgeStatus['wiki'] as Map?)?['vaultExists'] ?? false)).toString()),
                               _statusChip('Budget', (_budget['estimatedUsd'] ?? 0).toString()),
                               _statusChip('Ultraplan', _ultraplanSessions.length.toString()),
                             ],

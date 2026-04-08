@@ -17,6 +17,7 @@ export function buildDoctorReport(input: {
   pluginManifests: RuntimePluginManifest[];
   securityFindings: SecurityFinding[];
   promptInjectionFindings?: Array<{ severity: "info" | "warning" | "error"; title: string; detail: string }>;
+  knowledgeWikiFindings?: Array<{ severity: "info" | "warning" | "error"; title: string; detail: string }>;
   openshellStatus: Record<string, unknown>;
   contextEngineStatus: Record<string, unknown>;
   securityPolicy: SecurityPolicy;
@@ -53,6 +54,15 @@ export function buildDoctorReport(input: {
     findings.push({
       severity: finding.severity,
       subsystem: "prompt-injection",
+      title: finding.title,
+      detail: finding.detail,
+    });
+  }
+
+  for (const finding of input.knowledgeWikiFindings ?? []) {
+    findings.push({
+      severity: finding.severity,
+      subsystem: "knowledge-wiki",
       title: finding.title,
       detail: finding.detail,
     });

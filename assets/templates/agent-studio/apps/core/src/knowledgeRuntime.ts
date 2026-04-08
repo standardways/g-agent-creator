@@ -1,7 +1,15 @@
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { applyKnowledgeWikiMutation } from "./knowledgeWikiApply.js";
+import { syncKnowledgeWikiBridge } from "./knowledgeWikiBridge.js";
+import { compileKnowledgeWikiVault } from "./knowledgeWikiCompile.js";
+import { renderMarkdownFence, renderKnowledgeWikiMarkdown, slugifyKnowledgeWikiSegment } from "./knowledgeWikiMarkdown.js";
+import { getKnowledgeWikiPage, searchKnowledgeWiki } from "./knowledgeWikiQuery.js";
+import { buildKnowledgeWikiDoctor, buildKnowledgeWikiPromptSupplement, resolveKnowledgeWikiStatus } from "./knowledgeWikiStatus.js";
+import { ensureKnowledgeWikiVault } from "./knowledgeWikiVault.js";
+import { lintKnowledgeWikiVault } from "./knowledgeWikiLint.js";
 import { loadPromptInjectionState, scanPromptInjectionText, shieldUntrustedContent } from "./promptInjectionRuntime.js";
 
 export type KnowledgeConfig = {
@@ -16,6 +24,28 @@ export type KnowledgeConfig = {
   logFile: string;
   schemaFile: string;
   autoFileAnswers: boolean;
+  vaultMode: "isolated" | "bridge";
+  renderMode: "native" | "obsidian";
+  bridge: {
+    enabled: boolean;
+    indexMemoryEntries: boolean;
+    indexDreamReports: boolean;
+    indexProjectMemoryFiles: boolean;
+  };
+  ingest: {
+    autoCompile: boolean;
+  };
+  render: {
+    preserveHumanBlocks: boolean;
+    createBacklinks: boolean;
+    createDashboards: boolean;
+  };
+};
+
+export type KnowledgeConfigPatch = Partial<Omit<KnowledgeConfig, "bridge" | "ingest" | "render">> & {
+  bridge?: Partial<KnowledgeConfig["bridge"]>;
+  ingest?: Partial<KnowledgeConfig["ingest"]>;
+  render?: Partial<KnowledgeConfig["render"]>;
 };
 
 const DEFAULT_CONFIG: KnowledgeConfig = {
@@ -30,6 +60,22 @@ const DEFAULT_CONFIG: KnowledgeConfig = {
   logFile: "knowledge/log.md",
   schemaFile: "knowledge/schema.md",
   autoFileAnswers: false,
+  vaultMode: "isolated",
+  renderMode: "native",
+  bridge: {
+    enabled: false,
+    indexMemoryEntries: true,
+    indexDreamReports: true,
+    indexProjectMemoryFiles: true,
+  },
+  ingest: {
+    autoCompile: true,
+  },
+  render: {
+    preserveHumanBlocks: true,
+    createBacklinks: true,
+    createDashboards: true,
+  },
 };
 
 async function loadKnowledgeFile(dataDir: string) {
@@ -44,6 +90,18 @@ async function loadKnowledgeFile(dataDir: string) {
     config: {
       ...DEFAULT_CONFIG,
       ...(JSON.parse(await readFile(filePath, "utf8")) as Partial<KnowledgeConfig>),
+      bridge: {
+        ...DEFAULT_CONFIG.bridge,
+        ...(((JSON.parse(await readFile(filePath, "utf8")) as Partial<KnowledgeConfig>).bridge) ?? {}),
+      },
+      ingest: {
+        ...DEFAULT_CONFIG.ingest,
+        ...(((JSON.parse(await readFile(filePath, "utf8")) as Partial<KnowledgeConfig>).ingest) ?? {}),
+      },
+      render: {
+        ...DEFAULT_CONFIG.render,
+        ...(((JSON.parse(await readFile(filePath, "utf8")) as Partial<KnowledgeConfig>).render) ?? {}),
+      },
     },
   };
 }
@@ -52,9 +110,15 @@ export async function loadKnowledgeConfig(dataDir: string) {
   return (await loadKnowledgeFile(dataDir)).config;
 }
 
-export async function saveKnowledgeConfig(dataDir: string, patch: Partial<KnowledgeConfig>) {
+export async function saveKnowledgeConfig(dataDir: string, patch: KnowledgeConfigPatch) {
   const loaded = await loadKnowledgeFile(dataDir);
-  const next = { ...loaded.config, ...patch };
+  const next = {
+    ...loaded.config,
+    ...patch,
+    bridge: { ...loaded.config.bridge, ...(patch.bridge ?? {}) },
+    ingest: { ...loaded.config.ingest, ...(patch.ingest ?? {}) },
+    render: { ...loaded.config.render, ...(patch.render ?? {}) },
+  };
   await writeFile(loaded.filePath, JSON.stringify(next, null, 2), "utf8");
   return next;
 }
@@ -67,76 +131,40 @@ function slugify(value: string) {
     .slice(0, 80);
 }
 
-async function ensureFile(filePath: string, content: string) {
-  if (!existsSync(filePath)) {
-    await mkdir(path.dirname(filePath), { recursive: true });
-    await writeFile(filePath, content, "utf8");
-  }
-}
-
 export async function ensureKnowledgeWiki(projectRoot: string, config: KnowledgeConfig) {
-  const rawDir = path.join(projectRoot, config.rawDir);
-  const wikiDir = path.join(projectRoot, config.wikiDir);
-  const sourcesDir = path.join(wikiDir, "sources");
-  const analysesDir = path.join(wikiDir, "analyses");
-  await mkdir(rawDir, { recursive: true });
-  await mkdir(sourcesDir, { recursive: true });
-  await mkdir(analysesDir, { recursive: true });
-
-  await ensureFile(
-    path.join(projectRoot, config.indexFile),
-    "# Knowledge Index\n\nGenerated wiki index for maintained knowledge pages.\n"
-  );
-  await ensureFile(
-    path.join(projectRoot, config.logFile),
-    "# Knowledge Log\n\nChronological log of ingests, analyses, and lint passes.\n"
-  );
-  await ensureFile(
-    path.join(projectRoot, config.schemaFile),
-    [
-      "# Knowledge Schema",
-      "",
-      "- `knowledge/raw/` stores immutable sources.",
-      "- `knowledge/wiki/sources/` stores source summaries.",
-      "- `knowledge/wiki/analyses/` stores filed answers and syntheses.",
-      "- `knowledge/index.md` indexes maintained pages.",
-      "- `knowledge/log.md` records chronological operations.",
-    ].join("\n")
-  );
-  await ensureFile(path.join(rawDir, "README.md"), "# Raw Sources\n\nDrop immutable source documents here.\n");
-  await ensureFile(path.join(wikiDir, "README.md"), "# Wiki\n\nLLM-maintained knowledge pages live here.\n");
-
-  return {
-    rawDir,
-    wikiDir,
-    sourcesDir,
-    analysesDir,
-    indexFile: path.join(projectRoot, config.indexFile),
-    logFile: path.join(projectRoot, config.logFile),
-    schemaFile: path.join(projectRoot, config.schemaFile),
-  };
+  return await ensureKnowledgeWikiVault(projectRoot, config);
 }
 
 export async function knowledgeWikiStatus(projectRoot: string, config: KnowledgeConfig) {
-  const layout = await ensureKnowledgeWiki(projectRoot, config);
-  const rawFiles = (await readdir(layout.rawDir, { withFileTypes: true })).filter((entry) => entry.isFile()).map((entry) => entry.name);
-  const wikiFiles = (await readdir(layout.wikiDir, { withFileTypes: true }))
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .map((entry) => entry.name);
-  const sourcePages = (await readdir(layout.sourcesDir, { withFileTypes: true }))
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .map((entry) => entry.name);
-  const analysisPages = (await readdir(layout.analysesDir, { withFileTypes: true }))
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .map((entry) => entry.name);
-  return {
-    enabled: config.wikiEnabled,
-    ...layout,
-    rawFiles: rawFiles.length,
-    sourcePages: sourcePages.length,
-    analysisPages: analysisPages.length,
-    rootPages: wikiFiles.length,
-  };
+  return await resolveKnowledgeWikiStatus(projectRoot, config);
+}
+
+export async function compileKnowledgeWiki(projectRoot: string, config: KnowledgeConfig) {
+  return await compileKnowledgeWikiVault(projectRoot, config);
+}
+
+export async function searchKnowledgeWikiPages(projectRoot: string, config: KnowledgeConfig, query: string, limit?: number) {
+  return await searchKnowledgeWiki(projectRoot, config, query, limit ?? config.defaultLimit);
+}
+
+export async function getKnowledgeWiki(projectRoot: string, config: KnowledgeConfig, lookup: string, fromLine?: number, lineCount?: number) {
+  return await getKnowledgeWikiPage(projectRoot, config, lookup, fromLine, lineCount);
+}
+
+export async function applyKnowledgeWiki(projectRoot: string, config: KnowledgeConfig, mutation: Record<string, unknown>) {
+  return await applyKnowledgeWikiMutation(projectRoot, config, mutation);
+}
+
+export async function bridgeKnowledgeWiki(projectRoot: string, dataDir: string, config: KnowledgeConfig, ownerId?: string) {
+  return await syncKnowledgeWikiBridge(projectRoot, dataDir, config, ownerId);
+}
+
+export async function knowledgeWikiDoctor(projectRoot: string, config: KnowledgeConfig) {
+  return await buildKnowledgeWikiDoctor(projectRoot, config);
+}
+
+export function knowledgeWikiPromptSupplement(config: KnowledgeConfig) {
+  return buildKnowledgeWikiPromptSupplement(config);
 }
 
 export async function ingestKnowledgeSource(input: {
@@ -147,12 +175,13 @@ export async function ingestKnowledgeSource(input: {
   title?: string;
   summary?: string;
 }) {
-  const layout = await ensureKnowledgeWiki(input.projectRoot, input.config);
+  const layout = await ensureKnowledgeWikiVault(input.projectRoot, input.config);
   const sourceText = await readFile(input.sourcePath, "utf8");
   const title = input.title?.trim() || path.basename(input.sourcePath, path.extname(input.sourcePath));
   const slug = slugify(title) || "source";
   const rawTarget = path.join(layout.rawDir, `${slug}${path.extname(input.sourcePath) || ".md"}`);
-  const wikiTarget = path.join(layout.sourcesDir, `${slug}.md`);
+  const pagePath = path.join(layout.sourcesDir, `${slug}.md`);
+
   const promptInjectionState = await loadPromptInjectionState(input.dataDir);
   const scan = scanPromptInjectionText(sourceText);
   if (
@@ -168,8 +197,8 @@ export async function ingestKnowledgeSource(input: {
       blockHighRisk: true,
     });
   }
-  await copyFile(input.sourcePath, rawTarget);
 
+  await copyFile(input.sourcePath, rawTarget);
   const summary =
     input.summary?.trim() ||
     sourceText
@@ -179,6 +208,7 @@ export async function ingestKnowledgeSource(input: {
       .slice(0, 12)
       .join(" ")
       .slice(0, 1500);
+
   const shielded = await shieldUntrustedContent({
     dataDir: input.dataDir,
     sourceKind: "knowledge_source",
@@ -187,44 +217,73 @@ export async function ingestKnowledgeSource(input: {
   });
 
   await writeFile(
-    wikiTarget,
-    [
-      `# ${title}`,
-      "",
-      `Source: [raw/${path.basename(rawTarget)}](../raw/${path.basename(rawTarget)})`,
-      "",
-      "## Summary",
-      "",
-      shielded.content || "No summary available.",
-      "",
-      "## Prompt Injection Risk",
-      "",
-      `- severity: ${shielded.scan.severity}`,
-      `- score: ${shielded.scan.score}`,
-      `- suspicious: ${shielded.scan.suspicious}`,
-      `- signals: ${shielded.scan.hits.length > 0 ? shielded.scan.hits.map((hit) => hit.id).join(", ") : "none"}`,
-    ].join("\n"),
-    "utf8"
+    pagePath,
+    renderKnowledgeWikiMarkdown({
+      frontmatter: {
+        pageType: "source",
+        id: `source.${slugifyKnowledgeWikiSegment(title)}`,
+        title,
+        sourceType: "local_source",
+        provenanceMode: "isolated",
+        provenanceLabel: `local source: ${path.basename(rawTarget)}`,
+        sourcePath: rawTarget,
+        status: "active",
+        updatedAt: new Date().toISOString(),
+      },
+      body: [
+        `# ${title}`,
+        "",
+        "## Source",
+        `- Type: \`local_source\``,
+        `- Path: \`${rawTarget}\``,
+        "",
+        "## Summary",
+        "",
+        shielded.content || "No summary available.",
+        "",
+        "## Content",
+        renderMarkdownFence(sourceText, "text"),
+        "",
+        "## Prompt Injection Risk",
+        "",
+        `- severity: ${shielded.scan.severity}`,
+        `- score: ${shielded.scan.score}`,
+        `- suspicious: ${shielded.scan.suspicious}`,
+        `- signals: ${shielded.scan.hits.length > 0 ? shielded.scan.hits.map((hit) => hit.id).join(", ") : "none"}`,
+        "",
+        "## Notes",
+        "<!-- gagent:wiki:human:start -->",
+        "<!-- gagent:wiki:human:end -->",
+        "",
+      ].join("\n"),
+    }),
+    "utf8",
   );
 
-  const indexText = await readFile(layout.indexFile, "utf8");
-  const indexEntry = `- [${title}](wiki/sources/${path.basename(wikiTarget)}) - source summary`;
-  if (!indexText.includes(indexEntry)) {
-    await writeFile(layout.indexFile, `${indexText.trimEnd()}\n${indexEntry}\n`, "utf8");
-  }
-  const logText = await readFile(layout.logFile, "utf8");
+  const compile = input.config.ingest.autoCompile
+    ? await compileKnowledgeWikiVault(input.projectRoot, input.config)
+    : null;
+
+  const logText = await readFile(layout.runtimeLogFile, "utf8").catch(() => "");
   await writeFile(
-    layout.logFile,
-    `${logText.trimEnd()}\n## [${new Date().toISOString()}] ingest | ${title}\n- source: ${input.sourcePath}\n- wiki: ${wikiTarget}\n- prompt_injection_severity: ${shielded.scan.severity}\n`,
-    "utf8"
+    layout.runtimeLogFile,
+    `${logText}${JSON.stringify({
+      type: "ingest",
+      timestamp: new Date().toISOString(),
+      sourcePath: input.sourcePath,
+      pagePath: path.relative(layout.wikiRoot, pagePath).replace(/\\/g, "/"),
+      promptInjectionSeverity: shielded.scan.severity,
+    })}\n`,
+    "utf8",
   );
 
   return {
     title,
     rawTarget,
-    wikiTarget,
+    wikiTarget: pagePath,
     summary,
     promptInjection: shielded.scan,
+    indexUpdatedFiles: compile?.updatedFiles ?? [],
   };
 }
 
@@ -235,59 +294,28 @@ export async function fileKnowledgeAnswer(input: {
   title: string;
   content: string;
 }) {
-  const layout = await ensureKnowledgeWiki(input.projectRoot, input.config);
-  const slug = slugify(input.title) || "analysis";
-  const target = path.join(layout.analysesDir, `${slug}.md`);
   const shielded = await shieldUntrustedContent({
     dataDir: input.dataDir,
     sourceKind: "knowledge_analysis",
     sourceLabel: input.title,
     text: input.content.trim(),
   });
-  await writeFile(target, `# ${input.title}\n\n${shielded.content}\n`, "utf8");
-  const indexText = await readFile(layout.indexFile, "utf8");
-  const indexEntry = `- [${input.title}](wiki/analyses/${path.basename(target)}) - filed analysis`;
-  if (!indexText.includes(indexEntry)) {
-    await writeFile(layout.indexFile, `${indexText.trimEnd()}\n${indexEntry}\n`, "utf8");
-  }
-  const logText = await readFile(layout.logFile, "utf8");
-  await writeFile(
-    layout.logFile,
-    `${logText.trimEnd()}\n## [${new Date().toISOString()}] query | ${input.title}\n- wiki: ${target}\n- prompt_injection_severity: ${shielded.scan.severity}\n`,
-    "utf8"
-  );
-  return { target, promptInjection: shielded.scan };
+  const result = await applyKnowledgeWikiMutation(input.projectRoot, input.config, {
+    op: "create_synthesis",
+    title: input.title,
+    body: shielded.content,
+    sourceIds: ["source.manual"],
+    status: "active",
+  });
+  return {
+    target: result.pagePath,
+    promptInjection: shielded.scan,
+    compile: result.compile,
+  };
 }
 
 export async function lintKnowledgeWiki(projectRoot: string, config: KnowledgeConfig) {
-  const layout = await ensureKnowledgeWiki(projectRoot, config);
-  const findings: Array<{ severity: "info" | "warning"; message: string }> = [];
-  const indexText = await readFile(layout.indexFile, "utf8");
-  const sourcePages = (await readdir(layout.sourcesDir, { withFileTypes: true }))
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .map((entry) => entry.name);
-  const analysisPages = (await readdir(layout.analysesDir, { withFileTypes: true }))
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .map((entry) => entry.name);
-  for (const file of [...sourcePages, ...analysisPages]) {
-    if (!indexText.includes(file)) {
-      findings.push({
-        severity: "warning",
-        message: `Page is not indexed: ${file}`,
-      });
-    }
-  }
-  if (sourcePages.length === 0) {
-    findings.push({
-      severity: "info",
-      message: "No source pages have been ingested yet.",
-    });
-  }
-  return {
-    sourcePages: sourcePages.length,
-    analysisPages: analysisPages.length,
-    findings,
-  };
+  return await lintKnowledgeWikiVault(projectRoot, config);
 }
 
 function execText(command: string, args: string[], cwd: string) {
@@ -345,7 +373,11 @@ export async function qmdQuery(input: {
 }) {
   const mode = input.mode ?? input.config.defaultMode;
   const limit = input.limit ?? input.config.defaultLimit;
-  const output = await execText(input.config.command, [mode, input.query, "--json", "-n", String(limit)], input.projectRoot);
+  const output = await execText(
+    input.config.command,
+    [mode, input.query, "--json", "-n", String(limit)],
+    input.projectRoot,
+  );
   return JSON.parse(output) as unknown;
 }
 

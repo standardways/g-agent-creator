@@ -32,7 +32,25 @@ import { evolveFromSession, loadEvolutionState } from "./evolutionRuntime.js";
 import { detectExternalConfig, importExternalConfig } from "./externalConfigRuntime.js";
 import { buildNormalizedHistory } from "./historyRuntime.js";
 import { createJob, listJobs, updateJob } from "./jobRuntime.js";
-import { ensureKnowledgeWiki, fileKnowledgeAnswer, ingestKnowledgeSource, lintKnowledgeWiki, loadKnowledgeConfig, knowledgeWikiStatus, qmdGet, qmdQuery, qmdStatus, saveKnowledgeConfig } from "./knowledgeRuntime.js";
+import {
+  applyKnowledgeWiki,
+  bridgeKnowledgeWiki,
+  compileKnowledgeWiki,
+  ensureKnowledgeWiki,
+  fileKnowledgeAnswer,
+  getKnowledgeWiki,
+  ingestKnowledgeSource,
+  knowledgeWikiDoctor,
+  knowledgeWikiPromptSupplement,
+  knowledgeWikiStatus,
+  lintKnowledgeWiki,
+  loadKnowledgeConfig,
+  qmdGet,
+  qmdQuery,
+  qmdStatus,
+  saveKnowledgeConfig,
+  searchKnowledgeWikiPages,
+} from "./knowledgeRuntime.js";
 import { addKairosSignal, listKairosSignals, scanKairosSignals } from "./kairosRuntime.js";
 import { deleteLearnedSkill, listLearnedSkillEntries, setLearnedSkillPinned } from "./learnedSkillRuntime.js";
 import { loadLocalMarketplace } from "./marketplaceRuntime.js";
@@ -236,12 +254,28 @@ const knowledgeConfigSchema = z.object({
   defaultMode: z.enum(["search", "vsearch", "query"]).optional(),
   defaultLimit: z.number().min(1).max(50).optional(),
   wikiEnabled: z.boolean().optional(),
+  vaultMode: z.enum(["isolated", "bridge"]).optional(),
+  renderMode: z.enum(["native", "obsidian"]).optional(),
   rawDir: z.string().optional(),
   wikiDir: z.string().optional(),
   indexFile: z.string().optional(),
   logFile: z.string().optional(),
   schemaFile: z.string().optional(),
   autoFileAnswers: z.boolean().optional(),
+  bridge: z.object({
+    enabled: z.boolean().optional(),
+    indexMemoryEntries: z.boolean().optional(),
+    indexDreamReports: z.boolean().optional(),
+    indexProjectMemoryFiles: z.boolean().optional(),
+  }).optional(),
+  ingest: z.object({
+    autoCompile: z.boolean().optional(),
+  }).optional(),
+  render: z.object({
+    preserveHumanBlocks: z.boolean().optional(),
+    createBacklinks: z.boolean().optional(),
+    createDashboards: z.boolean().optional(),
+  }).optional(),
 });
 const knowledgeQuerySchema = z.object({
   query: z.string().min(1),
@@ -250,6 +284,15 @@ const knowledgeQuerySchema = z.object({
 });
 const knowledgeGetSchema = z.object({
   selector: z.string().min(1),
+});
+const knowledgeWikiSearchSchema = z.object({
+  query: z.string().min(1),
+  limit: z.number().min(1).max(50).optional(),
+});
+const knowledgeWikiGetSchema = z.object({
+  lookup: z.string().min(1),
+  fromLine: z.number().min(1).optional(),
+  lineCount: z.number().min(1).max(500).optional(),
 });
 const providerCatalogSchema = z.object({
   entries: z.array(z.any()),
@@ -261,6 +304,17 @@ const knowledgeIngestSchema = z.object({
 const knowledgeFileSchema = z.object({
   title: z.string().min(1),
   content: z.string().min(1),
+});
+const knowledgeWikiApplySchema = z.object({
+  op: z.enum(["create_synthesis", "update_metadata"]),
+  title: z.string().optional(),
+  body: z.string().optional(),
+  lookup: z.string().optional(),
+  sourceIds: z.array(z.string()).optional(),
+  contradictions: z.array(z.string()).optional(),
+  questions: z.array(z.string()).optional(),
+  confidence: z.number().min(0).max(1).nullable().optional(),
+  status: z.string().optional(),
 });
 const budgetConfigSchema = z.object({
   enabled: z.boolean().optional(),
@@ -859,6 +913,11 @@ const tools = [
   { type: "function", function: { name: "search_files", description: "Search text files with a regex or plain string.", parameters: { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["pattern"], additionalProperties: false } } },
   { type: "function", function: { name: "run_shell", description: "Run a read-only shell command.", parameters: { type: "object", properties: { command: { type: "string" }, path: { type: "string" } }, required: ["command"], additionalProperties: false } } },
   { type: "function", function: { name: "http_fetch", description: "Fetch a public URL over HTTP GET.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false } } },
+  { type: "function", function: { name: "wiki_status", description: "Inspect compiled knowledge wiki status, counts, and warnings.", parameters: { type: "object", properties: {}, additionalProperties: false } } },
+  { type: "function", function: { name: "wiki_search", description: "Search the compiled knowledge wiki by title, id, path, or body.", parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } }, required: ["query"], additionalProperties: false } } },
+  { type: "function", function: { name: "wiki_get", description: "Read a compiled knowledge wiki page by id or relative path.", parameters: { type: "object", properties: { lookup: { type: "string" }, fromLine: { type: "number" }, lineCount: { type: "number" } }, required: ["lookup"], additionalProperties: false } } },
+  { type: "function", function: { name: "wiki_apply", description: "Apply bounded synthesis or metadata updates to the compiled knowledge wiki.", parameters: { type: "object", properties: { op: { type: "string", enum: ["create_synthesis", "update_metadata"] }, title: { type: "string" }, body: { type: "string" }, lookup: { type: "string" }, sourceIds: { type: "array", items: { type: "string" } }, contradictions: { type: "array", items: { type: "string" } }, questions: { type: "array", items: { type: "string" } }, confidence: { type: "number" }, status: { type: "string" } }, required: ["op"], additionalProperties: false } } },
+  { type: "function", function: { name: "wiki_lint", description: "Lint the compiled knowledge wiki for structure, provenance, contradictions, and broken links.", parameters: { type: "object", properties: {}, additionalProperties: false } } },
 ];
 const allTools = [
   ...tools,
@@ -971,6 +1030,7 @@ async function runAgentTurn(
     plannerNote: planner.length > 0 ? planner : undefined,
     rolePrompt: primaryRolePrompt,
     compactionSummary: compactionSummary?.summary,
+    promptSupplements: knowledgeWikiPromptSupplement(await loadKnowledgeConfig(dataDir)),
     recentMessages,
   });
   if (assembled.warning) {
@@ -1028,6 +1088,26 @@ async function runAgentTurn(
           ensureOutboundAllowed(url, "http");
           const fetched = await fetch(url);
           output = { status: fetched.status, body: (await fetched.text()).slice(0, 4000) };
+        }
+        if (toolCall.function.name === "wiki_status") {
+          const knowledgeConfig = await loadKnowledgeConfig(dataDir);
+          output = await knowledgeWikiStatus(projectRoot, knowledgeConfig);
+        }
+        if (toolCall.function.name === "wiki_search") {
+          const knowledgeConfig = await loadKnowledgeConfig(dataDir);
+          output = await searchKnowledgeWikiPages(projectRoot, knowledgeConfig, String(args["query"] ?? ""), Number(args["limit"] ?? knowledgeConfig.defaultLimit));
+        }
+        if (toolCall.function.name === "wiki_get") {
+          const knowledgeConfig = await loadKnowledgeConfig(dataDir);
+          output = await getKnowledgeWiki(projectRoot, knowledgeConfig, String(args["lookup"] ?? ""), Number(args["fromLine"] ?? 1), Number(args["lineCount"] ?? 200));
+        }
+        if (toolCall.function.name === "wiki_apply") {
+          const knowledgeConfig = await loadKnowledgeConfig(dataDir);
+          output = await applyKnowledgeWiki(projectRoot, knowledgeConfig, args);
+        }
+        if (toolCall.function.name === "wiki_lint") {
+          const knowledgeConfig = await loadKnowledgeConfig(dataDir);
+          output = await lintKnowledgeWiki(projectRoot, knowledgeConfig);
         }
         const dynamicTool = runtimePlugins.tools.find((tool) => tool.name === toolCall.function.name);
         if (dynamicTool) {
@@ -1205,6 +1285,7 @@ app.get("/health", async (_req, res) => {
   const liveContextEngineConfig = (await loadContextEngineConfig(dataDir)).config;
   const promptInjection = await loadPromptInjectionState(dataDir);
   const knowledgeEngine = await loadKnowledgeConfig(dataDir);
+  const knowledgeWiki = await knowledgeWikiDoctor(projectRoot, knowledgeEngine);
   const recipes = await listRecipes(dataDir);
   const distros = await listDistros(dataDir);
   const permissions = await listPermissions(dataDir);
@@ -1236,6 +1317,7 @@ app.get("/health", async (_req, res) => {
     pluginManifests: runtimePlugins.manifests,
     securityFindings,
     promptInjectionFindings: injectionFindings,
+    knowledgeWikiFindings: knowledgeWiki.findings,
     openshellStatus,
     contextEngineStatus: {
       active: liveContextEngineConfig.active,
@@ -1296,6 +1378,7 @@ app.get("/health", async (_req, res) => {
       resolved: Boolean(getContextEngine(liveContextEngineConfig.active)),
     },
     knowledgeEngine,
+    knowledgeWiki,
     promptInjection: {
       config: promptInjection.config,
       recentEvents: promptInjection.recentEvents.slice(0, 10),
@@ -1866,6 +1949,7 @@ app.get("/api/knowledge/status", async (_req, res) => {
   res.json({
     qmd: await qmdStatus(projectRoot, config),
     wiki: await knowledgeWikiStatus(projectRoot, config),
+    doctor: await knowledgeWikiDoctor(projectRoot, config),
   });
 });
 
@@ -1937,6 +2021,27 @@ app.post("/api/knowledge/wiki/init", async (_req, res) => {
   }
 });
 
+app.get("/api/knowledge/wiki/status", async (_req, res) => {
+  try {
+    const config = await loadKnowledgeConfig(dataDir);
+    res.json({
+      status: await knowledgeWikiStatus(projectRoot, config),
+      doctor: await knowledgeWikiDoctor(projectRoot, config),
+    });
+  } catch (error) {
+    res.status(400).json({ error: errorMessage(error) });
+  }
+});
+
+app.post("/api/knowledge/wiki/compile", async (_req, res) => {
+  try {
+    const config = await loadKnowledgeConfig(dataDir);
+    res.json(await compileKnowledgeWiki(projectRoot, config));
+  } catch (error) {
+    res.status(400).json({ error: errorMessage(error) });
+  }
+});
+
 app.post("/api/knowledge/wiki/ingest", async (req, res) => {
   try {
     const payload = knowledgeIngestSchema.parse(req.body);
@@ -1951,6 +2056,33 @@ app.post("/api/knowledge/wiki/ingest", async (req, res) => {
         title: payload.title,
       })
     );
+  } catch (error) {
+    res.status(400).json({ error: errorMessage(error) });
+  }
+});
+
+app.post("/api/knowledge/wiki/search", async (req, res) => {
+  try {
+    const payload = knowledgeWikiSearchSchema.parse(req.body);
+    const config = await loadKnowledgeConfig(dataDir);
+    res.json({
+      results: await searchKnowledgeWikiPages(projectRoot, config, payload.query, payload.limit),
+    });
+  } catch (error) {
+    res.status(400).json({ error: errorMessage(error) });
+  }
+});
+
+app.post("/api/knowledge/wiki/get", async (req, res) => {
+  try {
+    const payload = knowledgeWikiGetSchema.parse(req.body);
+    const config = await loadKnowledgeConfig(dataDir);
+    const result = await getKnowledgeWiki(projectRoot, config, payload.lookup, payload.fromLine, payload.lineCount);
+    if (!result) {
+      res.status(404).json({ error: "Wiki page not found." });
+      return;
+    }
+    res.json(result);
   } catch (error) {
     res.status(400).json({ error: errorMessage(error) });
   }
@@ -1974,10 +2106,30 @@ app.post("/api/knowledge/wiki/file", async (req, res) => {
   }
 });
 
+app.post("/api/knowledge/wiki/apply", async (req, res) => {
+  try {
+    const payload = knowledgeWikiApplySchema.parse(req.body);
+    const config = await loadKnowledgeConfig(dataDir);
+    res.json(await applyKnowledgeWiki(projectRoot, config, payload as Record<string, unknown>));
+  } catch (error) {
+    res.status(400).json({ error: errorMessage(error) });
+  }
+});
+
 app.get("/api/knowledge/wiki/lint", async (_req, res) => {
   try {
     const config = await loadKnowledgeConfig(dataDir);
     res.json(await lintKnowledgeWiki(projectRoot, config));
+  } catch (error) {
+    res.status(400).json({ error: errorMessage(error) });
+  }
+});
+
+app.post("/api/knowledge/wiki/bridge/import", async (req, res) => {
+  try {
+    const user = await resolveUser(req.header("authorization") ?? undefined);
+    const config = await loadKnowledgeConfig(dataDir);
+    res.json(await bridgeKnowledgeWiki(projectRoot, dataDir, config, user.uid));
   } catch (error) {
     res.status(400).json({ error: errorMessage(error) });
   }
@@ -2149,6 +2301,7 @@ app.get("/api/doctor", async (_req, res) => {
   const openshellStatus = await getOpenShellStatus(openshellProfile);
   const contextEngineConfig = (await loadContextEngineConfig(dataDir)).config;
   const promptInjection = await loadPromptInjectionState(dataDir);
+  const knowledgeConfig = await loadKnowledgeConfig(dataDir);
   const securityFindings = findSecurityFindings({
     policy: securityPolicyState,
     marketplace,
@@ -2162,6 +2315,7 @@ app.get("/api/doctor", async (_req, res) => {
       pluginManifests: runtimePlugins.manifests,
       securityFindings,
       promptInjectionFindings: promptInjectionFindings(promptInjection),
+      knowledgeWikiFindings: (await knowledgeWikiDoctor(projectRoot, knowledgeConfig)).findings,
       openshellStatus,
       contextEngineStatus: {
         active: contextEngineConfig.active,
@@ -3261,6 +3415,23 @@ app.post("/api/openai/responses", async (req, res) => {
           ensureOutboundAllowed(url, "http");
           const fetched = await fetch(url);
           return (await protectToolOutput(name, { status: fetched.status, body: (await fetched.text()).slice(0, 4000) }, url)).content;
+        }
+        if (name === "wiki_status") {
+          return (await protectToolOutput(name, await knowledgeWikiStatus(projectRoot, await loadKnowledgeConfig(dataDir)), name)).content;
+        }
+        if (name === "wiki_search") {
+          const knowledgeConfig = await loadKnowledgeConfig(dataDir);
+          return (await protectToolOutput(name, await searchKnowledgeWikiPages(projectRoot, knowledgeConfig, String(args.query ?? ""), Number(args.limit ?? knowledgeConfig.defaultLimit)), String(args.query ?? ""))).content;
+        }
+        if (name === "wiki_get") {
+          const knowledgeConfig = await loadKnowledgeConfig(dataDir);
+          return (await protectToolOutput(name, await getKnowledgeWiki(projectRoot, knowledgeConfig, String(args.lookup ?? ""), Number(args.fromLine ?? 1), Number(args.lineCount ?? 200)), String(args.lookup ?? ""))).content;
+        }
+        if (name === "wiki_apply") {
+          return (await protectToolOutput(name, await applyKnowledgeWiki(projectRoot, await loadKnowledgeConfig(dataDir), args), name)).content;
+        }
+        if (name === "wiki_lint") {
+          return (await protectToolOutput(name, await lintKnowledgeWiki(projectRoot, await loadKnowledgeConfig(dataDir)), name)).content;
         }
         const dynamicTool = runtimePlugins.tools.find((tool) => tool.name === name);
         if (dynamicTool) {
